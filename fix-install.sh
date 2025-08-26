@@ -37,123 +37,90 @@ cd /opt/cgnat-portal
 # Parar containers existentes
 log_info "Parando containers existentes..."
 docker compose down || true
+docker system prune -f
 
-# Remover containers órfãos
-docker container prune -f
+# Verificar memória disponível
+TOTAL_MEM=$(free -m | awk 'NR==2{printf "%.0f", $2}')
+log_info "Memória total disponível: ${TOTAL_MEM}MB"
 
-# Criar docker-compose.yml corrigido diretamente
-log_info "Criando docker-compose.yml corrigido..."
-cat > docker-compose.yml << 'EOF'
+if [ $TOTAL_MEM -lt 2048 ]; then
+    ES_MEM="512m"
+    LS_MEM="256m"
+    log_warning "Pouca memória detectada. Usando configuração mínima."
+else
+    ES_MEM="1g"
+    LS_MEM="512m"
+fi
+
+# Criar docker-compose.yml ultra-simplificado
+log_info "Criando docker-compose.yml ultra-simplificado..."
+cat > docker-compose.yml << EOF
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: cgnat-elasticsearch
     environment:
-      - node.name=elasticsearch
-      - cluster.name=cgnat-cluster
       - discovery.type=single-node
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
-      - xpack.security.enabled=true
+      - "ES_JAVA_OPTS=-Xms${ES_MEM} -Xmx${ES_MEM}"
+      - ELASTIC_PASSWORD=\${ELASTIC_PASSWORD:-changeme}
+      - xpack.security.enabled=false
       - xpack.security.http.ssl.enabled=false
       - xpack.security.transport.ssl.enabled=false
-      - path.repo=/usr/share/elasticsearch/backup
       - bootstrap.memory_lock=false
+      - cluster.routing.allocation.disk.threshold_enabled=false
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
-      - elasticsearch_backup:/usr/share/elasticsearch/backup
     ports:
       - "9200:9200"
     networks:
       - cgnat-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+    restart: unless-stopped
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: cgnat-kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=elastic
-      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD:-changeme}
-      - SERVER_NAME=kibana
       - SERVER_HOST=0.0.0.0
+      - xpack.security.enabled=false
     ports:
       - "5601:5601"
     networks:
       - cgnat-network
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - elasticsearch
+    restart: unless-stopped
 
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.0
     container_name: cgnat-logstash
     environment:
-      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "LS_JAVA_OPTS=-Xms${LS_MEM} -Xmx${LS_MEM}"
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=elastic
-      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD:-changeme}
     volumes:
       - ./logstash/pipeline:/usr/share/logstash/pipeline
-      - ./logstash/patterns:/usr/share/logstash/patterns
     ports:
       - "5514:5514/tcp"
       - "5514:5514/udp"
-      - "6514:6514/tcp"
-      - "9600:9600"
     networks:
       - cgnat-network
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - elasticsearch
+    restart: unless-stopped
 
   portal:
-    image: node:18-alpine
+    image: nginx:alpine
     container_name: cgnat-portal
-    working_dir: /app
-    environment:
-      - NODE_ENV=development
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
-      - PORT=3000
     volumes:
-      - ./portal:/app
+      - ./portal:/usr/share/nginx/html
     ports:
-      - "7880:3000"
+      - "7880:80"
     networks:
       - cgnat-network
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
     restart: unless-stopped
-    command: sh -c "npm init -y && npm install next@latest react@latest react-dom@latest && npm run dev"
-
-  minio:
-    image: minio/minio:latest
-    container_name: cgnat-minio
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme123}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    networks:
-      - cgnat-network
-    command: server /data --console-address ":9001"
 
 volumes:
   elasticsearch_data:
-    driver: local
-  elasticsearch_backup:
-    driver: local
-  minio_data:
     driver: local
 
 networks:
@@ -161,80 +128,173 @@ networks:
     driver: bridge
 EOF
 
-# Criar arquivo básico do portal se não existir
-if [ ! -f portal/pages/index.js ]; then
-    log_info "Criando arquivos básicos do portal..."
-    mkdir -p portal/pages
-    
-    cat > portal/pages/index.js << 'EOF'
-export default function Home() {
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <h1>Portal de Logs NAT/CGNAT</h1>
-      <p>Sistema funcionando! Elasticsearch conectado.</p>
-      
-      <div style={{ marginTop: '30px' }}>
-        <h2>Status do Sistema</h2>
-        <ul>
-          <li>✅ Elasticsearch: Conectado</li>
-          <li>✅ Logstash: Recebendo logs na porta 5514</li>
-          <li>✅ Kibana: Disponível na porta 5601</li>
-        </ul>
-      </div>
-      
-      <div style={{ marginTop: '30px' }}>
-        <h2>Configuração de Equipamentos</h2>
-        <p>Configure seus equipamentos para enviar logs via syslog:</p>
-        <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px' }}>
-Servidor: SEU_IP_AQUI
-Porta TCP: 5514
-Porta UDP: 5514
-Formato: key=value (orig=IP:porta trans=IP:porta dst=IP:porta proto=17)
-        </pre>
-      </div>
-      
-      <div style={{ marginTop: '30px' }}>
-        <h2>Links Úteis</h2>
-        <ul>
-          <li><a href="http://localhost:5601" target="_blank">Kibana - Visualização de Logs</a></li>
-          <li><a href="http://localhost:9001" target="_blank">MinIO Console - Backup</a></li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-EOF
-
-    cat > portal/package.json << 'EOF'
-{
-  "name": "cgnat-portal",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
-  "dependencies": {
-    "next": "14.0.0",
-    "react": "^18",
-    "react-dom": "^18"
+# Criar pipeline básico do Logstash
+log_info "Criando pipeline básico do Logstash..."
+mkdir -p logstash/pipeline
+cat > logstash/pipeline/cgnat.conf << 'EOF'
+input {
+  tcp {
+    port => 5514
+    type => "cgnat"
+  }
+  
+  udp {
+    port => 5514
+    type => "cgnat"
   }
 }
-EOF
-fi
 
-# Iniciar serviços novamente
-log_info "Iniciando serviços corrigidos..."
+filter {
+  if [type] == "cgnat" {
+    # Parse básico de syslog
+    grok {
+      match => { 
+        "message" => "<%{POSINT:priority}>%{GREEDYDATA:syslog_message}" 
+      }
+    }
+
+    # Parse key=value
+    kv {
+      source => "syslog_message"
+      field_split => " "
+      value_split => "="
+    }
+    
+    # Adicionar timestamp
+    mutate {
+      add_field => { "[@metadata][index]" => "cgnat-logs-%{+YYYY.MM.dd}" }
+    }
+  }
+}
+
+output {
+  if [type] == "cgnat" {
+    elasticsearch {
+      hosts => ["elasticsearch:9200"]
+      index => "%{[@metadata][index]}"
+    }
+  }
+  
+  # Debug
+  stdout { codec => dots }
+}
+EOF
+
+# Criar portal HTML básico
+log_info "Criando portal HTML básico..."
+mkdir -p portal
+cat > portal/index.html << 'EOF'
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal CGNAT</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { background: #f0f8ff; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .config { background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        pre { background: #eee; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        .links a { display: inline-block; margin: 10px 15px 10px 0; padding: 10px 20px; background: #007cba; color: white; text-decoration: none; border-radius: 3px; }
+        .links a:hover { background: #005a87; }
+        h1 { color: #333; }
+        h2 { color: #666; border-bottom: 2px solid #ddd; padding-bottom: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ Portal de Logs NAT/CGNAT</h1>
+        <p>Sistema de gerenciamento de logs em conformidade com a legislação brasileira.</p>
+        
+        <div class="status">
+            <h2>📊 Status do Sistema</h2>
+            <ul>
+                <li>✅ <strong>Elasticsearch</strong>: Armazenamento de logs</li>
+                <li>✅ <strong>Logstash</strong>: Recebendo logs na porta 5514</li>
+                <li>✅ <strong>Kibana</strong>: Interface de visualização</li>
+                <li>✅ <strong>Portal</strong>: Interface web ativa</li>
+            </ul>
+        </div>
+        
+        <div class="config">
+            <h2>⚙️ Configuração de Equipamentos</h2>
+            <p>Configure seus equipamentos CGNAT/Firewall para enviar logs via syslog:</p>
+            <pre><strong>Servidor:</strong> <span id="server-ip">SEU_IP_AQUI</span>
+<strong>Porta TCP:</strong> 5514
+<strong>Porta UDP:</strong> 5514 (opcional)
+<strong>Formato:</strong> key=value
+
+<strong>Exemplo:</strong>
+orig=100.64.1.45:54321 trans=177.45.123.45:12345 dst=8.8.8.8:53 proto=17</pre>
+        </div>
+        
+        <div class="links">
+            <h2>🔗 Links Úteis</h2>
+            <a href="http://localhost:5601" target="_blank">📈 Kibana - Visualização</a>
+            <a href="http://localhost:9200/_cluster/health" target="_blank">🔍 Status Elasticsearch</a>
+            <a href="#" onclick="testConnection()">🧪 Testar Conexão</a>
+        </div>
+        
+        <div class="config">
+            <h2>📋 Comandos Úteis</h2>
+            <pre><strong>Ver status:</strong>
+cd /opt/cgnat-portal && docker compose ps
+
+<strong>Ver logs:</strong>
+docker compose logs -f
+
+<strong>Testar envio de log:</strong>
+echo "orig=100.64.1.45:54321 trans=177.45.123.45:12345 dst=8.8.8.8:53 proto=17" | nc localhost 5514
+
+<strong>Verificar índices:</strong>
+curl http://localhost:9200/_cat/indices</pre>
+        </div>
+    </div>
+    
+    <script>
+        // Detectar IP do servidor
+        if (window.location.hostname !== 'localhost') {
+            document.getElementById('server-ip').textContent = window.location.hostname;
+        }
+        
+        function testConnection() {
+            fetch('http://localhost:9200/_cluster/health')
+                .then(response => response.json())
+                .then(data => {
+                    alert('✅ Elasticsearch Status: ' + data.status);
+                })
+                .catch(error => {
+                    alert('❌ Erro ao conectar com Elasticsearch');
+                });
+        }
+    </script>
+</body>
+</html>
+EOF
+
+# Ajustar permissões
+chown -R 1000:1000 /opt/cgnat-portal/elasticsearch 2>/dev/null || true
+
+# Iniciar serviços
+log_info "Iniciando serviços ultra-simplificados..."
 docker compose up -d
 
-# Aguardar Elasticsearch
-log_info "Aguardando Elasticsearch inicializar (60 segundos)..."
-sleep 60
+# Aguardar um pouco
+log_info "Aguardando serviços inicializarem (30 segundos)..."
+sleep 30
 
 # Verificar status
 log_info "Verificando status dos serviços..."
 docker compose ps
+
+# Testar Elasticsearch
+log_info "Testando Elasticsearch..."
+if curl -s http://localhost:9200/_cluster/health | grep -q "yellow\|green"; then
+    log_success "Elasticsearch está funcionando!"
+else
+    log_error "Elasticsearch ainda não está pronto. Aguarde mais alguns minutos."
+fi
 
 # Mostrar informações
 log_success "Correção concluída!"
@@ -242,11 +302,12 @@ echo ""
 log_info "=== INFORMAÇÕES DE ACESSO ==="
 echo "Portal Web: http://$(hostname -I | awk '{print $1}'):7880"
 echo "Kibana: http://$(hostname -I | awk '{print $1}'):5601"
-echo "MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
-echo ""
-log_info "=== CREDENCIAIS ==="
-echo "Elasticsearch: elastic / $(grep ELASTIC_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)"
-echo "MinIO: admin / $(grep MINIO_ROOT_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)"
+echo "Elasticsearch: http://$(hostname -I | awk '{print $1}'):9200"
 echo ""
 log_info "=== TESTAR LOGS ==="
-echo "Execute: /opt/cgnat-portal/scripts/test-syslog.sh $(hostname -I | awk '{print $1}') 5514"
+echo "Enviar log de teste:"
+echo 'echo "orig=100.64.1.45:54321 trans=177.45.123.45:12345 dst=8.8.8.8:53 proto=17" | nc localhost 5514'
+echo ""
+log_info "=== VERIFICAR LOGS ==="
+echo "curl http://localhost:9200/_cat/indices"
+echo "curl http://localhost:9200/cgnat-logs-*/_search?pretty"
