@@ -6,6 +6,9 @@
 
 set -e
 
+# Token GitHub (será passado como parâmetro ou variável de ambiente)
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
 # Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -34,6 +37,16 @@ log_error() {
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_error "Este script deve ser executado como root"
+        exit 1
+    fi
+}
+
+# Verificar token GitHub
+check_github_token() {
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        log_error "Token GitHub não fornecido!"
+        echo "Use: GITHUB_TOKEN=seu_token ./install.sh"
+        echo "Ou: ./install.sh seu_token"
         exit 1
     fi
 }
@@ -188,20 +201,61 @@ download_project_files() {
     
     cd /opt/cgnat-portal
     
+    # Headers para autenticação
+    AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
+    
     # Baixar docker-compose.yml
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/docker-compose.yml -o docker-compose.yml
+    log_info "Baixando docker-compose.yml..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/docker-compose.yml \
+        -o docker-compose.yml
     
     # Baixar configurações do Logstash
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/pipeline/cgnat.conf -o logstash/pipeline/cgnat.conf
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/patterns/cgnat -o logstash/patterns/cgnat
+    log_info "Baixando configurações do Logstash..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/pipeline/cgnat.conf \
+        -o logstash/pipeline/cgnat.conf
+    
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/patterns/cgnat \
+        -o logstash/patterns/cgnat
     
     # Baixar configurações do Elasticsearch
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/elasticsearch/config/cgnat-template.json -o elasticsearch/config/cgnat-template.json
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/elasticsearch/config/cgnat-ilm-policy.json -o elasticsearch/config/cgnat-ilm-policy.json
+    log_info "Baixando configurações do Elasticsearch..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/elasticsearch/config/cgnat-template.json \
+        -o elasticsearch/config/cgnat-template.json
     
     # Baixar scripts
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/bootstrap-elasticsearch.sh -o scripts/bootstrap-elasticsearch.sh
+    log_info "Baixando scripts..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/bootstrap-elasticsearch.sh \
+        -o scripts/bootstrap-elasticsearch.sh
     chmod +x scripts/bootstrap-elasticsearch.sh
+    
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/test-syslog.sh \
+        -o scripts/test-syslog.sh
+    chmod +x scripts/test-syslog.sh
+    
+    # Baixar arquivos do portal
+    log_info "Baixando arquivos do portal..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/package.json \
+        -o portal/package.json
+    
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/pages/index.js \
+        -o portal/pages/index.js
+    
+    # Criar diretório pages se não existir
+    mkdir -p portal/pages
+    
+    # Baixar .env.example
+    log_info "Baixando .env.example..."
+    curl -H "$AUTH_HEADER" \
+        -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/.env.example \
+        -o .env.example
     
     log_success "Arquivos do projeto baixados"
 }
@@ -339,7 +393,7 @@ start_services() {
     
     # Aguardar Elasticsearch estar pronto
     log_info "Aguardando Elasticsearch inicializar..."
-    sleep 30
+    sleep 60
     
     # Configurar Elasticsearch
     ./scripts/bootstrap-elasticsearch.sh
@@ -368,10 +422,11 @@ show_final_info() {
     echo "Porta TLS: 6514 (opcional)"
     echo ""
     log_info "=== COMANDOS ÚTEIS ==="
-    echo "Ver status: docker compose ps"
-    echo "Ver logs: docker compose logs -f"
-    echo "Parar: docker compose down"
-    echo "Iniciar: docker compose up -d"
+    echo "Ver status: cd /opt/cgnat-portal && docker compose ps"
+    echo "Ver logs: cd /opt/cgnat-portal && docker compose logs -f"
+    echo "Parar: cd /opt/cgnat-portal && docker compose down"
+    echo "Iniciar: cd /opt/cgnat-portal && docker compose up -d"
+    echo "Testar logs: /opt/cgnat-portal/scripts/test-syslog.sh $(hostname -I | awk '{print $1}') 5514"
     echo ""
     log_warning "IMPORTANTE: Altere as senhas padrão antes de usar em produção!"
     log_warning "Credenciais salvas em /opt/cgnat-portal/.env"
@@ -381,7 +436,13 @@ show_final_info() {
 main() {
     log_info "Iniciando instalação do Portal CGNAT no Debian 12..."
     
+    # Se token foi passado como parâmetro
+    if [[ -n "$1" ]]; then
+        GITHUB_TOKEN="$1"
+    fi
+    
     check_root
+    check_github_token
     check_debian_version
     update_system
     install_dependencies
