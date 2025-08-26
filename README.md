@@ -29,9 +29,9 @@ Portal completo para armazenamento, pesquisa e relatórios de logs NAT/CGNAT em 
 ## 📋 Requisitos
 
 - **SO**: Debian 12 (Bookworm)
-- **RAM**: Mínimo 8GB (recomendado 16GB+)
-- **Disco**: Mínimo 100GB (dimensionar conforme volume de logs)
-- **CPU**: 4 cores (recomendado 8+)
+- **RAM**: Mínimo 4GB (recomendado 8GB+)
+- **Disco**: Mínimo 50GB (dimensionar conforme volume de logs)
+- **CPU**: 2 cores (recomendado 4+)
 - **Rede**: Portas 5514 (syslog), 7880 (portal), 5601 (kibana)
 
 ## 🚀 Instalação Rápida
@@ -40,36 +40,27 @@ Portal completo para armazenamento, pesquisa e relatórios de logs NAT/CGNAT em 
 
 ```bash
 # Download e execução do script
-curl -fsSL https://raw.githubusercontent.com/seu-repo/cgnat-portal/main/scripts/install-debian12.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/install.sh -o install.sh
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-### 2. Configurar Projeto
+### 2. Se houver problemas, executar correção
 
 ```bash
-# Clonar repositório
-cd /opt/cgnat-portal
-git clone https://github.com/seu-repo/cgnat-portal.git .
-
-# Configurar variáveis de ambiente
-cp .env.example .env
-nano .env  # Editar senhas e configurações
-
-# Iniciar serviços
-docker compose up -d
-
-# Configurar Elasticsearch
-./scripts/bootstrap-elasticsearch.sh
+# Script de correção
+curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/fix-install.sh -o fix-install.sh
+chmod +x fix-install.sh
+sudo ./fix-install.sh
 ```
 
 ### 3. Verificar Instalação
 
 ```bash
 # Verificar status dos containers
-docker compose ps
+cd /opt/cgnat-portal && docker compose ps
 
-# Verificar logs
+# Ver logs
 docker compose logs -f
 
 # Testar conectividade
@@ -190,7 +181,7 @@ tail -f /var/log/cgnat-portal/health.log
 tail -f /var/log/cgnat-portal/backup.log
 
 # Logs do Docker
-docker compose logs -f
+cd /opt/cgnat-portal && docker compose logs -f
 ```
 
 ### Alertas
@@ -230,9 +221,8 @@ curl -X DELETE "localhost:9200/cgnat-logs-2023.01.01"
 
 ```bash
 cd /opt/cgnat-portal
-git pull
+curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/docker-compose.yml -o docker-compose.yml
 docker compose down
-docker compose build
 docker compose up -d
 ```
 
@@ -242,7 +232,7 @@ docker compose up -d
 
 ```bash
 # Verificar logs
-docker compose logs elasticsearch
+cd /opt/cgnat-portal && docker compose logs elasticsearch
 
 # Verificar permissões
 sudo chown -R 1000:1000 /opt/cgnat-portal/elasticsearch
@@ -255,20 +245,20 @@ free -h
 
 ```bash
 # Verificar Logstash
-docker compose logs logstash
+cd /opt/cgnat-portal && docker compose logs logstash
 
 # Testar conectividade syslog
 echo "test message" | nc localhost 5514
 
-# Verificar patterns grok
-grep "_grok" /var/log/logstash/grok-failures.log
+# Testar com script
+/opt/cgnat-portal/scripts/test-syslog.sh localhost 5514
 ```
 
 ### Portal não carrega
 
 ```bash
 # Verificar container
-docker compose ps portal
+cd /opt/cgnat-portal && docker compose ps portal
 
 # Verificar logs
 docker compose logs portal
@@ -277,12 +267,22 @@ docker compose logs portal
 curl -v http://localhost:7880
 ```
 
+## 🧪 Teste de Logs
+
+```bash
+# Testar envio de logs
+/opt/cgnat-portal/scripts/test-syslog.sh SEU_IP 5514
+
+# Verificar no Kibana
+# Acesse http://SEU_IP:5601
+# Vá em "Discover" e procure por índice "cgnat-logs-*"
+```
+
 ## 📞 Suporte
 
 Para suporte técnico:
-- **Email**: suporte@cgnat-portal.com
-- **Documentação**: https://docs.cgnat-portal.com
-- **Issues**: https://github.com/seu-repo/cgnat-portal/issues
+- **Issues**: https://github.com/theangelz/dashboard-em-tempo-real/issues
+- **Documentação**: Este README
 
 ## 📄 Licença
 
@@ -297,3 +297,18 @@ O sistema atende aos marcos normativos brasileiros para guarda de registros de c
 - Controles de acesso adequados
 - Trilha de auditoria completa
 - Integridade dos dados (hash SHA-256)
+
+## 🎯 Comandos Rápidos
+
+```bash
+# Instalação completa
+curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/install.sh | sudo bash
+
+# Correção se houver problemas
+curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/fix-install.sh | sudo bash
+
+# Ver status
+cd /opt/cgnat-portal && docker compose ps
+
+# Testar logs
+/opt/cgnat-portal/scripts/test-syslog.sh $(hostname -I | awk '{print $1}') 5514
