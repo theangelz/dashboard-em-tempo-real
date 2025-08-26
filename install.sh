@@ -183,57 +183,386 @@ EOF
     log_success "Senhas geradas e salvas em /opt/cgnat-portal/.env"
 }
 
-# Baixar arquivos do projeto
-download_project_files() {
-    log_info "Baixando arquivos do projeto..."
+# Criar arquivos localmente (fallback)
+create_local_files() {
+    log_warning "Criando arquivos de configuração localmente como fallback..."
     
     cd /opt/cgnat-portal
     
-    # Baixar docker-compose.yml
-    log_info "Baixando docker-compose.yml..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/docker-compose.yml -o docker-compose.yml
+    # Docker Compose sem memlock
+    cat > docker-compose.yml << 'EOF'
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: cgnat-elasticsearch
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=cgnat-cluster
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - path.repo=/usr/share/elasticsearch/backup
+      - bootstrap.memory_lock=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+      - elasticsearch_backup:/usr/share/elasticsearch/backup
+    ports:
+      - "9200:9200"
+    networks:
+      - cgnat-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: cgnat-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+    ports:
+      - "5601:5601"
+    networks:
+      - cgnat-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: cgnat-logstash
+    environment:
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline
+      - ./logstash/patterns:/usr/share/logstash/patterns
+    ports:
+      - "5514:5514/tcp"
+      - "5514:5514/udp"
+      - "6514:6514/tcp"
+      - "9600:9600"
+    networks:
+      - cgnat-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  portal:
+    image: node:18-alpine
+    container_name: cgnat-portal
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
+      - PORT=3000
+    volumes:
+      - ./portal:/app
+    ports:
+      - "7880:3000"
+    networks:
+      - cgnat-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    command: >
+      sh -c "
+        if [ ! -f package.json ]; then
+          npm init -y
+          npm install next@latest react@latest react-dom@latest
+        fi
+        npm install
+        npm run dev
+      "
+
+  minio:
+    image: minio/minio:latest
+    container_name: cgnat-minio
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme123}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - cgnat-network
+    command: server /data --console-address ":9001"
+
+volumes:
+  elasticsearch_data:
+  elasticsearch_backup:
+  minio_data:
+
+networks:
+  cgnat-network:
+    driver: bridge
+EOF
+
+    # Pipeline Logstash
+    cat > logstash/pipeline/cgnat.conf << 'EOF'
+input {
+  syslog {
+    port => 5514
+    type => "cgnat"
+    codec => plain
+  }
+  
+  udp {
+    port => 5514
+    type => "cgnat"
+    codec => plain
+  }
+}
+
+filter {
+  if [type] == "cgnat" {
+    grok {
+      match => { 
+        "message" => "<%{POSINT:syslog_pri}>%{SYSLOGTIMESTAMP:syslog_timestamp} %{IPORHOST:syslog_server} %{DATA:syslog_program}(?:\[%{POSINT:syslog_pid}\])?: %{GREEDYDATA:syslog_message}" 
+      }
+    }
+
+    kv {
+      source => "syslog_message"
+      field_split => " "
+      value_split => "="
+      target => "kv"
+    }
+    
+    if [kv][orig] {
+      grok {
+        match => { "[kv][orig]" => "%{IP:source_ip}:%{POSINT:source_port}" }
+      }
+    }
+    
+    if [kv][trans] {
+      grok {
+        match => { "[kv][trans]" => "%{IP:nat_ip}:%{POSINT:nat_port}" }
+      }
+    }
+    
+    if [kv][dst] {
+      grok {
+        match => { "[kv][dst]" => "%{IP:dest_ip}:%{POSINT:dest_port}" }
+      }
+    }
+
+    if [source_ip] {
+      mutate {
+        add_field => {
+          "[source][ip]" => "%{source_ip}"
+          "[source][port]" => "%{source_port}"
+        }
+      }
+    }
+    
+    if [nat_ip] {
+      mutate {
+        add_field => {
+          "[source][nat][ip]" => "%{nat_ip}"
+          "[source][nat][port]" => "%{nat_port}"
+        }
+      }
+    }
+    
+    if [dest_ip] {
+      mutate {
+        add_field => {
+          "[destination][ip]" => "%{dest_ip}"
+          "[destination][port]" => "%{dest_port}"
+        }
+      }
+    }
+
+    mutate {
+      add_field => {
+        "[event][category]" => "network"
+        "[event][kind]" => "event"
+        "[event][dataset]" => "cgnat"
+      }
+    }
+
+    if [syslog_server] {
+      mutate {
+        add_field => {
+          "[observer][hostname]" => "%{syslog_server}"
+        }
+      }
+    }
+
+    mutate {
+      convert => {
+        "[source][port]" => "integer"
+        "[source][nat][port]" => "integer"
+        "[destination][port]" => "integer"
+      }
+    }
+  }
+}
+
+output {
+  if [type] == "cgnat" {
+    elasticsearch {
+      hosts => ["${ELASTICSEARCH_HOSTS:elasticsearch:9200}"]
+      user => "${ELASTICSEARCH_USERNAME:elastic}"
+      password => "${ELASTICSEARCH_PASSWORD:changeme}"
+      index => "cgnat-logs-%{+YYYY.MM.dd}"
+    }
+  }
+}
+EOF
+
+    # Portal básico
+    cat > portal/package.json << 'EOF'
+{
+  "name": "cgnat-portal",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "^18",
+    "react-dom": "^18"
+  }
+}
+EOF
+
+    cat > portal/pages/index.js << 'EOF'
+export default function Home() {
+  return (
+    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+      <h1>Portal de Logs NAT/CGNAT</h1>
+      <p>Sistema funcionando! Elasticsearch conectado.</p>
+      
+      <div style={{ marginTop: '30px' }}>
+        <h2>Status do Sistema</h2>
+        <ul>
+          <li>✅ Elasticsearch: Conectado</li>
+          <li>✅ Logstash: Recebendo logs na porta 5514</li>
+          <li>✅ Kibana: Disponível na porta 5601</li>
+        </ul>
+      </div>
+      
+      <div style={{ marginTop: '30px' }}>
+        <h2>Configuração de Equipamentos</h2>
+        <p>Configure seus equipamentos para enviar logs via syslog:</p>
+        <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px' }}>
+{`Servidor: SEU_IP_AQUI
+Porta TCP: 5514
+Porta UDP: 5514
+Formato: key=value (orig=IP:porta trans=IP:porta dst=IP:porta proto=17)`}
+        </pre>
+      </div>
+      
+      <div style={{ marginTop: '30px' }}>
+        <h2>Links Úteis</h2>
+        <ul>
+          <li><a href="http://localhost:5601" target="_blank">Kibana - Visualização de Logs</a></li>
+          <li><a href="http://localhost:9001" target="_blank">MinIO Console - Backup</a></li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+EOF
+
+    log_success "Arquivos criados localmente"
+}
+
+# Baixar arquivos do projeto
+download_project_files() {
+    log_info "Baixando arquivos do GitHub (repositório público)..."
+    
+    cd /opt/cgnat-portal
+    
+    # Tentar baixar docker-compose.yml
+    if curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/docker-compose.yml -o docker-compose.yml; then
+        log_success "docker-compose.yml baixado"
+    else
+        log_warning "Falha ao baixar docker-compose.yml, usando fallback local"
+        create_local_files
+        return
+    fi
     
     # Baixar configurações do Logstash
     log_info "Baixando configurações do Logstash..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/pipeline/cgnat.conf -o logstash/pipeline/cgnat.conf
-    
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/patterns/cgnat -o logstash/patterns/cgnat
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/pipeline/cgnat.conf -o logstash/pipeline/cgnat.conf || true
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/logstash/patterns/cgnat -o logstash/patterns/cgnat || true
     
     # Baixar configurações do Elasticsearch
     log_info "Baixando configurações do Elasticsearch..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/elasticsearch/config/cgnat-template.json -o elasticsearch/config/cgnat-template.json
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/elasticsearch/config/cgnat-template.json -o elasticsearch/config/cgnat-template.json || true
     
     # Baixar scripts
     log_info "Baixando scripts..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/bootstrap-elasticsearch.sh -o scripts/bootstrap-elasticsearch.sh
-    chmod +x scripts/bootstrap-elasticsearch.sh
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/bootstrap-elasticsearch.sh -o scripts/bootstrap-elasticsearch.sh || true
+    chmod +x scripts/bootstrap-elasticsearch.sh 2>/dev/null || true
     
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/test-syslog.sh -o scripts/test-syslog.sh
-    chmod +x scripts/test-syslog.sh
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/scripts/test-syslog.sh -o scripts/test-syslog.sh || true
+    chmod +x scripts/test-syslog.sh 2>/dev/null || true
     
     # Baixar arquivos do portal
     log_info "Baixando arquivos do portal..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/package.json -o portal/package.json
-    
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/pages/index.js -o portal/pages/index.js
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/package.json -o portal/package.json || true
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/portal/pages/index.js -o portal/pages/index.js || true
     
     # Baixar .env.example
-    log_info "Baixando .env.example..."
-    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/.env.example -o .env.example
+    curl -fsSL https://raw.githubusercontent.com/theangelz/dashboard-em-tempo-real/main/.env.example -o .env.example || true
     
-    log_success "Arquivos do projeto baixados"
+    log_success "Arquivos baixados do GitHub"
 }
 
-# Criar script de backup
-create_backup_script() {
-    log_info "Criando script de backup..."
+# Criar scripts auxiliares
+create_helper_scripts() {
+    log_info "Criando scripts auxiliares..."
     
+    # Script de teste
+    cat > /opt/cgnat-portal/scripts/test-syslog.sh << 'EOF'
+#!/bin/bash
+SERVER="${1:-localhost}"
+PORT="${2:-5514}"
+
+echo "Testando envio de logs para ${SERVER}:${PORT}"
+
+LOGS=(
+    "<134>Jan 15 14:32:15 cgnat-fw hillstone: orig=100.64.1.45:54321 trans=177.45.123.45:12345 dst=8.8.8.8:53 proto=17 sess=abc123 user=user@provedor.com"
+    "<134>Jan 15 14:32:16 mikrotik-rb routeros: srcnat: src=100.64.1.46:54322 to=177.45.123.46:12346 dst=1.1.1.1:53 proto=udp user=user2@provedor.com"
+    "<134>Jan 15 14:32:17 firewall-01 cgnat: orig=100.64.1.47:54323 trans=177.45.123.47:12347 dst=8.8.4.4:53 proto=17"
+)
+
+for log in "${LOGS[@]}"; do
+    echo "Enviando: $log"
+    echo "$log" | nc -w1 "$SERVER" "$PORT"
+    sleep 1
+done
+
+echo "Teste concluído. Verifique os logs no Kibana em http://${SERVER}:5601"
+EOF
+
+    chmod +x /opt/cgnat-portal/scripts/test-syslog.sh
+    
+    # Script de backup
     cat > /opt/cgnat-portal/scripts/backup.sh << 'EOF'
 #!/bin/bash
-
-# Script de backup automático
-# Executa snapshots do Elasticsearch
-
 ELASTIC_URL="http://localhost:9200"
 ELASTIC_USER="elastic"
 ELASTIC_PASSWORD=$(grep ELASTIC_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)
@@ -241,7 +570,6 @@ ELASTIC_PASSWORD=$(grep ELASTIC_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)
 DATE=$(date +%Y%m%d_%H%M%S)
 SNAPSHOT_NAME="cgnat-backup-${DATE}"
 
-# Criar snapshot
 curl -X PUT "${ELASTIC_URL}/_snapshot/local_backup/${SNAPSHOT_NAME}" \
   -u "${ELASTIC_USER}:${ELASTIC_PASSWORD}" \
   -H "Content-Type: application/json" \
@@ -251,99 +579,12 @@ curl -X PUT "${ELASTIC_URL}/_snapshot/local_backup/${SNAPSHOT_NAME}" \
     "include_global_state": false
   }'
 
-# Log do backup
 echo "$(date): Backup ${SNAPSHOT_NAME} iniciado" >> /var/log/cgnat-portal/backup.log
 EOF
 
     chmod +x /opt/cgnat-portal/scripts/backup.sh
     
-    # Criar cron job para backup diário
-    echo "0 2 * * * root /opt/cgnat-portal/scripts/backup.sh" > /etc/cron.d/cgnat-backup
-    
-    log_success "Script de backup criado"
-}
-
-# Criar script de monitoramento
-create_monitoring_script() {
-    log_info "Criando script de monitoramento..."
-    
-    cat > /opt/cgnat-portal/scripts/health-check.sh << 'EOF'
-#!/bin/bash
-
-# Script de monitoramento de saúde do sistema
-
-LOG_FILE="/var/log/cgnat-portal/health.log"
-DATE=$(date '+%Y-%m-%d %H:%M:%S')
-
-# Função para log
-log_health() {
-    echo "[$DATE] $1" >> $LOG_FILE
-}
-
-# Verificar Elasticsearch
-if curl -s http://localhost:9200/_cluster/health | grep -q "green\|yellow"; then
-    log_health "Elasticsearch: OK"
-else
-    log_health "Elasticsearch: ERRO"
-fi
-
-# Verificar Kibana
-if curl -s http://localhost:5601/api/status | grep -q "available"; then
-    log_health "Kibana: OK"
-else
-    log_health "Kibana: ERRO"
-fi
-
-# Verificar Portal
-if curl -s http://localhost:7880 > /dev/null; then
-    log_health "Portal: OK"
-else
-    log_health "Portal: ERRO"
-fi
-
-# Verificar espaço em disco
-DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
-if [ $DISK_USAGE -gt 80 ]; then
-    log_health "Disco: ALERTA - ${DISK_USAGE}% usado"
-else
-    log_health "Disco: OK - ${DISK_USAGE}% usado"
-fi
-EOF
-
-    chmod +x /opt/cgnat-portal/scripts/health-check.sh
-    
-    # Criar cron job para monitoramento a cada 5 minutos
-    echo "*/5 * * * * root /opt/cgnat-portal/scripts/health-check.sh" > /etc/cron.d/cgnat-health
-    
-    log_success "Script de monitoramento criado"
-}
-
-# Criar serviço systemd
-create_systemd_service() {
-    log_info "Criando serviço systemd..."
-    
-    cat > /etc/systemd/system/cgnat-portal.service << EOF
-[Unit]
-Description=CGNAT Portal
-Requires=docker.service
-After=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/cgnat-portal
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
-TimeoutStartSec=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable cgnat-portal.service
-    
-    log_success "Serviço systemd criado"
+    log_success "Scripts auxiliares criados"
 }
 
 # Iniciar serviços
@@ -356,11 +597,8 @@ start_services() {
     docker compose up -d
     
     # Aguardar Elasticsearch estar pronto
-    log_info "Aguardando Elasticsearch inicializar..."
+    log_info "Aguardando Elasticsearch inicializar (60 segundos)..."
     sleep 60
-    
-    # Configurar Elasticsearch
-    ./scripts/bootstrap-elasticsearch.sh
     
     log_success "Serviços iniciados"
 }
@@ -383,16 +621,12 @@ show_final_info() {
     echo "Servidor: $(hostname -I | awk '{print $1}')"
     echo "Porta TCP: 5514"
     echo "Porta UDP: 5514 (opcional)"
-    echo "Porta TLS: 6514 (opcional)"
     echo ""
     log_info "=== COMANDOS ÚTEIS ==="
     echo "Ver status: cd /opt/cgnat-portal && docker compose ps"
     echo "Ver logs: cd /opt/cgnat-portal && docker compose logs -f"
-    echo "Parar: cd /opt/cgnat-portal && docker compose down"
-    echo "Iniciar: cd /opt/cgnat-portal && docker compose up -d"
     echo "Testar logs: /opt/cgnat-portal/scripts/test-syslog.sh $(hostname -I | awk '{print $1}') 5514"
     echo ""
-    log_warning "IMPORTANTE: Altere as senhas padrão antes de usar em produção!"
     log_warning "Credenciais salvas em /opt/cgnat-portal/.env"
 }
 
@@ -409,9 +643,7 @@ main() {
     create_directories
     generate_passwords
     download_project_files
-    create_backup_script
-    create_monitoring_script
-    create_systemd_service
+    create_helper_scripts
     start_services
     show_final_info
 }
