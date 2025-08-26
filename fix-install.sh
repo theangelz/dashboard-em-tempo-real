@@ -1,7 +1,48 @@
-version: '3.8'
+#!/bin/bash
 
+# Script para corrigir problemas na instalação
+
+set -e
+
+# Cores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Verificar se é root
+if [[ $EUID -ne 0 ]]; then
+    log_error "Este script deve ser executado como root"
+    exit 1
+fi
+
+log_info "Corrigindo instalação do Portal CGNAT..."
+
+# Parar containers existentes
+cd /opt/cgnat-portal
+log_info "Parando containers existentes..."
+docker compose down || true
+
+# Remover containers órfãos
+docker container prune -f
+
+# Atualizar docker-compose.yml
+log_info "Atualizando docker-compose.yml..."
+cat > docker-compose.yml << 'EOF'
 services:
-  # Elasticsearch
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: cgnat-elasticsearch
@@ -29,7 +70,6 @@ services:
       timeout: 10s
       retries: 5
 
-  # Kibana
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: cgnat-kibana
@@ -46,13 +86,7 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
 
-  # Logstash
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.0
     container_name: cgnat-logstash
@@ -75,7 +109,6 @@ services:
       elasticsearch:
         condition: service_healthy
 
-  # Portal Web
   portal:
     image: node:18-alpine
     container_name: cgnat-portal
@@ -120,7 +153,7 @@ export default function Home() {
         <h2>Configuração de Equipamentos</h2>
         <p>Configure seus equipamentos para enviar logs via syslog:</p>
         <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px' }}>
-Servidor: SEU_IP_AQUI
+Servidor: $(hostname -I | awk '{print $1}')
 Porta TCP: 5514
 Porta UDP: 5514
 Formato: key=value (orig=IP:porta trans=IP:porta dst=IP:porta proto=17)
@@ -159,7 +192,6 @@ EOFPKG
         npm run dev
       "
 
-  # MinIO para backup offsite
   minio:
     image: minio/minio:latest
     container_name: cgnat-minio
@@ -174,11 +206,6 @@ EOFPKG
     networks:
       - cgnat-network
     command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
 
 volumes:
   elasticsearch_data:
@@ -191,3 +218,31 @@ volumes:
 networks:
   cgnat-network:
     driver: bridge
+EOF
+
+# Iniciar serviços novamente
+log_info "Iniciando serviços corrigidos..."
+docker compose up -d
+
+# Aguardar Elasticsearch
+log_info "Aguardando Elasticsearch inicializar (60 segundos)..."
+sleep 60
+
+# Verificar status
+log_info "Verificando status dos serviços..."
+docker compose ps
+
+# Mostrar informações
+log_success "Correção concluída!"
+echo ""
+log_info "=== INFORMAÇÕES DE ACESSO ==="
+echo "Portal Web: http://$(hostname -I | awk '{print $1}'):7880"
+echo "Kibana: http://$(hostname -I | awk '{print $1}'):5601"
+echo "MinIO Console: http://$(hostname -I | awk '{print $1}'):9001"
+echo ""
+log_info "=== CREDENCIAIS ==="
+echo "Elasticsearch: elastic / $(grep ELASTIC_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)"
+echo "MinIO: admin / $(grep MINIO_ROOT_PASSWORD /opt/cgnat-portal/.env | cut -d'=' -f2)"
+echo ""
+log_info "=== TESTAR LOGS ==="
+echo "Execute: /opt/cgnat-portal/scripts/test-syslog.sh $(hostname -I | awk '{print $1}') 5514"
