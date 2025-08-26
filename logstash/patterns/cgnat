@@ -1,0 +1,17 @@
+# Hillstone CGNAT patterns
+HILLSTONE_CGNAT orig=%{IP:source_ip}:%{POSINT:source_port} trans=%{IP:nat_ip}:%{POSINT:nat_port} dst=%{IP:dest_ip}:%{POSINT:dest_port} proto=%{POSINT:proto}(?:\s+sess=%{DATA:sess})?(?:\s+user=%{DATA:user})?
+
+# MikroTik srcnat patterns  
+MIKROTIK_SRCNAT srcnat: src=%{IP:source_ip}:%{POSINT:source_port} to=%{IP:nat_ip}:%{POSINT:nat_port} dst=%{IP:dest_ip}:%{POSINT:dest_port} proto=%{WORD:proto}(?:\s+user=%{DATA:user})?
+
+# Generic key=value patterns
+CGNAT_KV (?:%{WORD}=%{DATA}\s*)*
+
+# Cisco ASA NAT patterns
+CISCO_ASA_NAT Built %{WORD:action} %{WORD:proto} translation from %{DATA:inside_interface}:%{IP:source_ip}/%{POSINT:source_port} to %{DATA:outside_interface}:%{IP:nat_ip}/%{POSINT:nat_port}
+
+# pfSense NAT patterns
+PFSENSE_NAT %{WORD:action},%{WORD:tracker},%{DATA:interface},%{WORD:reason},%{IP:source_ip},%{IP:dest_ip},%{POSINT:source_port},%{POSINT:dest_port},%{WORD:proto}
+
+# Fortinet FortiGate patterns
+FORTINET_NAT type=%{WORD:type} subtype=%{WORD:subtype} srcip=%{IP:source_ip} srcport=%{POSINT:source_port} dstip=%{IP:dest_ip} dstport=%{POSINT:dest_port} transsrcip=%{IP:nat_ip} transsrcport=%{POSINT:nat_port}

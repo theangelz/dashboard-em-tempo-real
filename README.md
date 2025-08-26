@@ -1,97 +1,299 @@
-# Next.js Template - Lasy AI
+# Portal de Logs NAT/CGNAT
 
-Este é um template [Next.js](https://nextjs.org) otimizado para deploys sem problemas, bootstrapped com [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Portal completo para armazenamento, pesquisa e relatórios de logs NAT/CGNAT em conformidade com a legislação brasileira.
 
-## 🚀 Melhorias para Deploy na Vercel
+## 🎯 Características
 
-Este template inclui otimizações específicas para evitar erros comuns de deploy:
+- **Conformidade Legal**: Retenção de 13 meses conforme marcos normativos brasileiros
+- **Busca Avançada**: Por IP público/privado, porta e intervalos de tempo
+- **Relatórios Oficiais**: PDF com hash SHA-256 e CSV para anexos
+- **Dashboard em Tempo Real**: Métricas de ingestão e top IPs/portas
+- **RBAC**: Controle de acesso por perfis (Admin, Operação, Jurídico)
+- **Auditoria Completa**: Log de todas as ações e acessos
+- **Backup Automático**: Local e offsite com retenção configurável
 
-### ✅ **Compatibilidade de Dependências**
+## 🏗️ Arquitetura
 
-- **Next.js 15.1.8** + **React 19** + todas as dependências atualizadas
-- **react-day-picker v9** compatível com React 19
-- **Configuração `.npmrc`** para resolver conflitos automaticamente
-
-### ✅ **Configurações de Build Otimizadas**
-
-- **TypeScript configurado** para excluir Supabase functions
-- **Webpack configurado** para ignorar conflitos Deno/Node.js
-- **`.vercelignore`** para otimizar o processo de build
-
-### ✅ **Componentes Atualizados**
-
-- **Calendar component** compatível com react-day-picker v9
-- **UI components** do Shadcn/UI nas versões mais recentes
-
----
-
-## 🛠️ Começando
-
-Execute o servidor de desenvolvimento:
-
-```bash
-npm run dev
-# ou
-yarn dev
-# ou
-pnpm dev
-# ou
-bun dev
+```
+[Equipamentos CGNAT/Firewall] 
+    ↓ Syslog (TCP/UDP/TLS)
+[Logstash] → Parse/Normalize
+    ↓ 
+[Elasticsearch] → Indexação/Retenção
+    ↓
+[Portal Web] → Interface/Relatórios
+[Kibana] → Dashboards avançados
+[MinIO] → Backup offsite
 ```
 
-Abra [http://localhost:3000](http://localhost:3000) no seu navegador para ver o resultado.
+## 📋 Requisitos
 
-Você pode começar editando a página modificando `app/page.tsx`. A página atualiza automaticamente conforme você edita o arquivo.
+- **SO**: Debian 12 (Bookworm)
+- **RAM**: Mínimo 8GB (recomendado 16GB+)
+- **Disco**: Mínimo 100GB (dimensionar conforme volume de logs)
+- **CPU**: 4 cores (recomendado 8+)
+- **Rede**: Portas 5514 (syslog), 7880 (portal), 5601 (kibana)
 
----
+## 🚀 Instalação Rápida
 
-## 📚 Stack Tecnológica
-
-- **Framework**: Next.js 15.1.8 com App Router
-- **React**: 19.0.0 com suporte total
-- **Styling**: Tailwind CSS + Shadcn/UI
-- **Icons**: Lucide React
-- **Forms**: React Hook Form + Zod
-- **UI Components**: Radix UI primitives
-
----
-
-## 🔧 Deploy na Vercel
-
-### **Variáveis de Ambiente**
-
-Se você estiver usando Supabase, configure estas variáveis na Vercel:
+### 1. Executar Script de Instalação
 
 ```bash
-NEXT_PUBLIC_SUPABASE_URL=sua_url_do_supabase
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sua_chave_anonima
+# Download e execução do script
+curl -fsSL https://raw.githubusercontent.com/seu-repo/cgnat-portal/main/scripts/install-debian12.sh -o install.sh
+chmod +x install.sh
+sudo ./install.sh
 ```
 
-### **Deploy Automático**
+### 2. Configurar Projeto
 
-1. Conecte seu repositório GitHub à Vercel
-2. A Vercel detectará automaticamente Next.js
-3. O build será executado sem erros graças às otimizações
+```bash
+# Clonar repositório
+cd /opt/cgnat-portal
+git clone https://github.com/seu-repo/cgnat-portal.git .
 
----
+# Configurar variáveis de ambiente
+cp .env.example .env
+nano .env  # Editar senhas e configurações
 
-## 📖 Saiba Mais
+# Iniciar serviços
+docker compose up -d
 
-Para aprender mais sobre Next.js, confira estes recursos:
+# Configurar Elasticsearch
+./scripts/bootstrap-elasticsearch.sh
+```
 
-- [Documentação Next.js](https://nextjs.org/docs) - aprenda sobre recursos e API do Next.js
-- [Learn Next.js](https://nextjs.org/learn) - tutorial interativo do Next.js
+### 3. Verificar Instalação
 
-Você pode conferir [o repositório GitHub do Next.js](https://github.com/vercel/next.js) - seu feedback e contribuições são bem-vindos!
+```bash
+# Verificar status dos containers
+docker compose ps
 
----
+# Verificar logs
+docker compose logs -f
 
-## 🎯 Deploy Otimizado
+# Testar conectividade
+curl http://localhost:9200/_cluster/health
+curl http://localhost:7880
+```
 
-A maneira mais fácil de deployar seu app Next.js é usar a [Plataforma Vercel](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) dos criadores do Next.js.
+## 🔧 Configuração
 
-Confira nossa [documentação de deployment do Next.js](https://nextjs.org/docs/app/building-your-application/deploying) para mais detalhes.
+### Equipamentos CGNAT
 
----
+Configure seus equipamentos para enviar logs via syslog:
 
-_Template otimizado para uso com Lasy AI - builds consistentes e deploys sem problemas!_
+**Hillstone CGNAT:**
+```
+# Configurar syslog server
+syslog-server 192.168.1.100 port 5514 protocol tcp
+syslog-server enable
+```
+
+**MikroTik RouterOS:**
+```
+/system logging action
+add name=cgnat-server target=remote remote=192.168.1.100:5514
+
+/system logging
+add topics=firewall,info action=cgnat-server
+```
+
+**Cisco ASA:**
+```
+logging host 192.168.1.100:5514
+logging trap informational
+```
+
+### Formatos de Log Suportados
+
+O sistema suporta múltiplos formatos:
+
+1. **Hillstone**: `orig=IP:porta trans=IP:porta dst=IP:porta proto=6`
+2. **MikroTik**: `srcnat: src=IP:porta to=IP:porta dst=IP:porta proto=tcp`
+3. **Genérico**: Formato key=value configurável
+
+## 📊 Uso
+
+### Dashboard
+
+Acesse `http://seu-servidor:7880` para:
+- Visualizar métricas em tempo real
+- Monitorar top IPs e portas
+- Verificar status de ingestão
+- Acompanhar erros de parse
+
+### Busca Avançada
+
+1. **Por IP Público + Porta**: Descobrir quem estava usando um IP:porta específico
+2. **Por IP Privado**: Rastrear atividade de um cliente específico
+3. **Por Intervalo de Tempo**: Logs em período específico
+
+### Relatórios
+
+**PDF (até 100 linhas):**
+- Cabeçalho institucional
+- Critérios de busca
+- Hash SHA-256 para integridade
+- Carimbo temporal UTC
+
+**CSV (completo):**
+- Todos os registros encontrados
+- Metadados incluídos
+- Hash de verificação
+
+## 🔒 Segurança
+
+### Controle de Acesso
+
+- **Admin**: Acesso total, configurações
+- **Operação**: Busca e relatórios
+- **Jurídico**: Apenas visualização e relatórios
+
+### Auditoria
+
+Todas as ações são registradas:
+- Logins/logouts
+- Buscas realizadas
+- Relatórios gerados
+- IP e user-agent do usuário
+
+### Backup
+
+**Automático:**
+- Diário: 7 dias de retenção
+- Semanal: 5 semanas de retenção  
+- Mensal: 13 meses de retenção
+
+**Destinos:**
+- Local: `/opt/cgnat-portal/backups`
+- Offsite: MinIO S3-compatible
+
+## 📈 Monitoramento
+
+### Health Checks
+
+Script automático verifica:
+- Status do Elasticsearch
+- Status do Kibana
+- Status do Portal
+- Uso de disco
+- Taxa de ingestão
+
+### Logs do Sistema
+
+```bash
+# Logs do portal
+tail -f /var/log/cgnat-portal/health.log
+
+# Logs de backup
+tail -f /var/log/cgnat-portal/backup.log
+
+# Logs do Docker
+docker compose logs -f
+```
+
+### Alertas
+
+Configure webhooks para Slack/Teams em caso de:
+- Falha de ingestão > 5 minutos
+- Uso de disco > 80%
+- Falha de backup
+- Erros de parse > 100/hora
+
+## 🛠️ Manutenção
+
+### Backup Manual
+
+```bash
+# Criar snapshot
+/opt/cgnat-portal/scripts/backup.sh
+
+# Listar snapshots
+curl -X GET "localhost:9200/_snapshot/local_backup/_all"
+
+# Restaurar snapshot
+curl -X POST "localhost:9200/_snapshot/local_backup/snapshot_name/_restore"
+```
+
+### Limpeza de Índices
+
+```bash
+# Verificar índices antigos
+curl -X GET "localhost:9200/_cat/indices/cgnat-logs-*?v&s=index"
+
+# Deletar índice específico (cuidado!)
+curl -X DELETE "localhost:9200/cgnat-logs-2023.01.01"
+```
+
+### Atualização
+
+```bash
+cd /opt/cgnat-portal
+git pull
+docker compose down
+docker compose build
+docker compose up -d
+```
+
+## 🐛 Troubleshooting
+
+### Elasticsearch não inicia
+
+```bash
+# Verificar logs
+docker compose logs elasticsearch
+
+# Verificar permissões
+sudo chown -R 1000:1000 /opt/cgnat-portal/elasticsearch
+
+# Verificar memória
+free -h
+```
+
+### Logs não aparecem
+
+```bash
+# Verificar Logstash
+docker compose logs logstash
+
+# Testar conectividade syslog
+echo "test message" | nc localhost 5514
+
+# Verificar patterns grok
+grep "_grok" /var/log/logstash/grok-failures.log
+```
+
+### Portal não carrega
+
+```bash
+# Verificar container
+docker compose ps portal
+
+# Verificar logs
+docker compose logs portal
+
+# Verificar conectividade
+curl -v http://localhost:7880
+```
+
+## 📞 Suporte
+
+Para suporte técnico:
+- **Email**: suporte@cgnat-portal.com
+- **Documentação**: https://docs.cgnat-portal.com
+- **Issues**: https://github.com/seu-repo/cgnat-portal/issues
+
+## 📄 Licença
+
+Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## ⚖️ Conformidade Legal
+
+**IMPORTANTE**: Esta solução implementa requisitos técnicos de guarda e segurança de registros. Políticas internas (acesso, cadeia de custódia, retenção estendida, resposta a ofícios) devem ser validadas pelo jurídico do provedor.
+
+O sistema atende aos marcos normativos brasileiros para guarda de registros de conexão, incluindo:
+- Retenção mínima de 13 meses
+- Controles de acesso adequados
+- Trilha de auditoria completa
+- Integridade dos dados (hash SHA-256)
