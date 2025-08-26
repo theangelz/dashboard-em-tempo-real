@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script para configurar Elasticsearch com ILM e templates
+# Script para configurar Elasticsearch com templates
 # Deve ser executado após o Elasticsearch estar rodando
 
 set -e
@@ -44,51 +44,6 @@ wait_for_elasticsearch() {
     exit 1
 }
 
-# Criar política ILM
-create_ilm_policy() {
-    log_info "Criando política ILM..."
-    
-    curl -X PUT "${ELASTIC_URL}/_ilm/policy/cgnat-policy" \
-        -u "${ELASTIC_USER}:${ELASTIC_PASSWORD}" \
-        -H "Content-Type: application/json" \
-        -d '{
-            "policy": {
-                "phases": {
-                    "hot": {
-                        "actions": {
-                            "rollover": {
-                                "max_age": "1d",
-                                "max_size": "50gb"
-                            },
-                            "set_priority": {
-                                "priority": 100
-                            }
-                        }
-                    },
-                    "warm": {
-                        "min_age": "30d",
-                        "actions": {
-                            "set_priority": {
-                                "priority": 50
-                            },
-                            "allocate": {
-                                "number_of_replicas": 0
-                            },
-                            "forcemerge": {
-                                "max_num_segments": 1
-                            }
-                        }
-                    },
-                    "delete": {
-                        "min_age": "395d"
-                    }
-                }
-            }
-        }'
-    
-    log_success "Política ILM criada"
-}
-
 # Criar template de índice
 create_index_template() {
     log_info "Criando template de índice..."
@@ -96,78 +51,7 @@ create_index_template() {
     curl -X PUT "${ELASTIC_URL}/_index_template/cgnat-logs" \
         -u "${ELASTIC_USER}:${ELASTIC_PASSWORD}" \
         -H "Content-Type: application/json" \
-        -d '{
-            "index_patterns": ["cgnat-logs-*"],
-            "template": {
-                "settings": {
-                    "number_of_shards": 1,
-                    "number_of_replicas": 0,
-                    "index.refresh_interval": "5s",
-                    "index.codec": "best_compression",
-                    "index.lifecycle.name": "cgnat-policy",
-                    "index.lifecycle.rollover_alias": "cgnat-logs"
-                },
-                "mappings": {
-                    "properties": {
-                        "@timestamp": { "type": "date" },
-                        "event": {
-                            "properties": {
-                                "category": { "type": "keyword" },
-                                "kind": { "type": "keyword" },
-                                "dataset": { "type": "keyword" },
-                                "timezone": { "type": "keyword" }
-                            }
-                        },
-                        "source": {
-                            "properties": {
-                                "ip": { "type": "ip" },
-                                "port": { "type": "integer" },
-                                "nat": {
-                                    "properties": {
-                                        "ip": { "type": "ip" },
-                                        "port": { "type": "integer" }
-                                    }
-                                }
-                            }
-                        },
-                        "destination": {
-                            "properties": {
-                                "ip": { "type": "ip" },
-                                "port": { "type": "integer" }
-                            }
-                        },
-                        "network": {
-                            "properties": {
-                                "transport": { "type": "keyword" },
-                                "iana_number": { "type": "integer" }
-                            }
-                        },
-                        "observer": {
-                            "properties": {
-                                "hostname": { "type": "keyword" },
-                                "vendor": { "type": "keyword" },
-                                "product": { "type": "keyword" },
-                                "type": { "type": "keyword" }
-                            }
-                        },
-                        "user": {
-                            "properties": {
-                                "name": { "type": "keyword" }
-                            }
-                        },
-                        "cgnat": {
-                            "properties": {
-                                "session": {
-                                    "properties": {
-                                        "id": { "type": "keyword" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }'
+        -d @elasticsearch/config/cgnat-template.json
     
     log_success "Template de índice criado"
 }
@@ -178,25 +62,22 @@ create_initial_index() {
     
     TODAY=$(date +%Y.%m.%d)
     
-    curl -X PUT "${ELASTIC_URL}/cgnat-logs-${TODAY}-000001" \
+    curl -X PUT "${ELASTIC_URL}/cgnat-logs-${TODAY}" \
         -u "${ELASTIC_USER}:${ELASTIC_PASSWORD}" \
         -H "Content-Type: application/json" \
         -d '{
             "aliases": {
-                "cgnat-logs": {
-                    "is_write_index": true
-                }
+                "cgnat-logs": {}
             }
         }'
     
     log_success "Índice inicial criado"
 }
 
-# Configurar repositório de snapshot local
+# Configurar repositório de snapshot
 create_snapshot_repository() {
     log_info "Configurando repositório de snapshot..."
     
-    # Repositório local
     curl -X PUT "${ELASTIC_URL}/_snapshot/local_backup" \
         -u "${ELASTIC_USER}:${ELASTIC_PASSWORD}" \
         -H "Content-Type: application/json" \
@@ -216,13 +97,11 @@ main() {
     log_info "Configurando Elasticsearch para Portal CGNAT..."
     
     wait_for_elasticsearch
-    create_ilm_policy
     create_index_template
     create_initial_index
     create_snapshot_repository
     
     log_success "Configuração do Elasticsearch concluída!"
-    log_info "Elasticsearch está pronto para receber logs NAT/CGNAT"
 }
 
 # Executar se chamado diretamente

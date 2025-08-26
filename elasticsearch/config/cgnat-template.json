@@ -5,9 +5,7 @@
       "number_of_shards": 1,
       "number_of_replicas": 0,
       "index.refresh_interval": "5s",
-      "index.codec": "best_compression",
-      "index.lifecycle.name": "cgnat-policy",
-      "index.lifecycle.rollover_alias": "cgnat-logs"
+      "index.codec": "best_compression"
     },
     "mappings": {
       "properties": {
@@ -16,90 +14,54 @@
         },
         "event": {
           "properties": {
-            "category": {
-              "type": "keyword"
-            },
-            "kind": {
-              "type": "keyword"
-            },
-            "dataset": {
-              "type": "keyword"
-            },
-            "timezone": {
-              "type": "keyword"
-            }
+            "category": { "type": "keyword" },
+            "kind": { "type": "keyword" },
+            "dataset": { "type": "keyword" },
+            "timezone": { "type": "keyword" }
           }
         },
         "source": {
           "properties": {
-            "ip": {
-              "type": "ip"
-            },
-            "port": {
-              "type": "integer"
-            },
+            "ip": { "type": "ip" },
+            "port": { "type": "integer" },
             "nat": {
               "properties": {
-                "ip": {
-                  "type": "ip"
-                },
-                "port": {
-                  "type": "integer"
-                }
+                "ip": { "type": "ip" },
+                "port": { "type": "integer" }
               }
             }
           }
         },
         "destination": {
           "properties": {
-            "ip": {
-              "type": "ip"
-            },
-            "port": {
-              "type": "integer"
-            }
+            "ip": { "type": "ip" },
+            "port": {  "type": "integer" }
           }
         },
         "network": {
           "properties": {
-            "transport": {
-              "type": "keyword"
-            },
-            "iana_number": {
-              "type": "integer"
-            }
+            "transport": { "type": "keyword" },
+            "iana_number": { "type": "integer" }
           }
         },
         "observer": {
           "properties": {
-            "hostname": {
-              "type": "keyword"
-            },
-            "vendor": {
-              "type": "keyword"
-            },
-            "product": {
-              "type": "keyword"
-            },
-            "type": {
-              "type": "keyword"
-            }
+            "hostname": { "type": "keyword" },
+            "vendor": { "type": "keyword" },
+            "product": { "type": "keyword" },
+            "type": { "type": "keyword" }
           }
         },
         "user": {
           "properties": {
-            "name": {
-              "type": "keyword"
-            }
+            "name": { "type": "keyword" }
           }
         },
         "cgnat": {
           "properties": {
             "session": {
               "properties": {
-                "id": {
-                  "type": "keyword"
-                }
+                "id": { "type": "keyword" }
               }
             }
           }

@@ -15,12 +15,14 @@ services:
       - xpack.security.enabled=true
       - xpack.security.http.ssl.enabled=false
       - xpack.security.transport.ssl.enabled=false
+      - path.repo=/usr/share/elasticsearch/backup
     ulimits:
       memlock:
         soft: -1
         hard: -1
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
+      - elasticsearch_backup:/usr/share/elasticsearch/backup
       - ./elasticsearch/config:/usr/share/elasticsearch/config/custom
     ports:
       - "9200:9200"
@@ -79,18 +81,19 @@ services:
       elasticsearch:
         condition: service_healthy
 
-  # Portal Web
+  # Portal Web (usando imagem pré-construída)
   portal:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: node:18-alpine
     container_name: cgnat-portal
+    working_dir: /app
     environment:
       - NODE_ENV=production
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
       - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key}
       - PORT=3000
+    volumes:
+      - ./portal:/app
     ports:
       - "7880:3000"
     networks:
@@ -99,6 +102,19 @@ services:
       elasticsearch:
         condition: service_healthy
     restart: unless-stopped
+    command: >
+      sh -c "
+        if [ ! -f package.json ]; then
+          echo 'Criando aplicação Next.js básica...'
+          npm init -y
+          npm install next@latest react@latest react-dom@latest
+          mkdir -p pages
+          echo 'export default function Home() { return <div><h1>Portal CGNAT</h1><p>Sistema inicializando...</p></div> }' > pages/index.js
+          echo '{ \"scripts\": { \"dev\": \"next dev\", \"build\": \"next build\", \"start\": \"next start\" } }' > package.json
+        fi
+        npm install
+        npm run dev
+      "
 
   # MinIO para backup offsite
   minio:
@@ -123,6 +139,8 @@ services:
 
 volumes:
   elasticsearch_data:
+    driver: local
+  elasticsearch_backup:
     driver: local
   minio_data:
     driver: local
