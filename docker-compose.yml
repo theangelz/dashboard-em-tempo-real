@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # Elasticsearch
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: cgnat-elasticsearch
@@ -29,7 +26,6 @@ services:
       timeout: 10s
       retries: 5
 
-  # Kibana
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.0
     container_name: cgnat-kibana
@@ -46,13 +42,7 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
 
-  # Logstash
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.0
     container_name: cgnat-logstash
@@ -75,7 +65,6 @@ services:
       elasticsearch:
         condition: service_healthy
 
-  # Portal Web
   portal:
     image: node:18-alpine
     container_name: cgnat-portal
@@ -96,70 +85,69 @@ services:
       elasticsearch:
         condition: service_healthy
     restart: unless-stopped
-    command: >
+    command: |
       sh -c "
         if [ ! -f package.json ]; then
           npm init -y
           npm install next@latest react@latest react-dom@latest
           mkdir -p pages
           cat > pages/index.js << 'EOFJS'
-export default function Home() {
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      <h1>Portal de Logs NAT/CGNAT</h1>
-      <p>Sistema funcionando! Elasticsearch conectado.</p>
-      <div style={{ marginTop: '30px' }}>
-        <h2>Status do Sistema</h2>
-        <ul>
-          <li>✅ Elasticsearch: Conectado</li>
-          <li>✅ Logstash: Recebendo logs na porta 5514</li>
-          <li>✅ Kibana: Disponível na porta 5601</li>
-        </ul>
-      </div>
-      <div style={{ marginTop: '30px' }}>
-        <h2>Configuração de Equipamentos</h2>
-        <p>Configure seus equipamentos para enviar logs via syslog:</p>
-        <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px' }}>
-Servidor: SEU_IP_AQUI
-Porta TCP: 5514
-Porta UDP: 5514
-Formato: key=value (orig=IP:porta trans=IP:porta dst=IP:porta proto=17)
-        </pre>
-      </div>
-      <div style={{ marginTop: '30px' }}>
-        <h2>Links Úteis</h2>
-        <ul>
-          <li><a href=\"http://localhost:5601\" target=\"_blank\">Kibana - Visualização de Logs</a></li>
-          <li><a href=\"http://localhost:9001\" target=\"_blank\">MinIO Console - Backup</a></li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-EOFJS
+      export default function Home() {
+        return (
+          <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+            <h1>Portal de Logs NAT/CGNAT</h1>
+            <p>Sistema funcionando! Elasticsearch conectado.</p>
+            <div style={{ marginTop: '30px' }}>
+              <h2>Status do Sistema</h2>
+              <ul>
+                <li>✅ Elasticsearch: Conectado</li>
+                <li>✅ Logstash: Recebendo logs na porta 5514</li>
+                <li>✅ Kibana: Disponível na porta 5601</li>
+              </ul>
+            </div>
+            <div style={{ marginTop: '30px' }}>
+              <h2>Configuração de Equipamentos</h2>
+              <p>Configure seus equipamentos para enviar logs via syslog:</p>
+              <pre style={{ background: '#f5f5f5', padding: '10px', borderRadius: '5px' }}>
+      Servidor: SEU_IP_AQUI
+      Porta TCP: 5514
+      Porta UDP: 5514
+      Formato: key=value (orig=IP:porta trans=IP:porta dst=IP:porta proto=17)
+              </pre>
+            </div>
+            <div style={{ marginTop: '30px' }}>
+              <h2>Links Úteis</h2>
+              <ul>
+                <li><a href=\"http://localhost:5601\" target=\"_blank\">Kibana - Visualização de Logs</a></li>
+                <li><a href=\"http://localhost:9001\" target=\"_blank\">MinIO Console - Backup</a></li>
+              </ul>
+            </div>
+          </div>
+        );
+      }
+      EOFJS
           cat > package.json << 'EOFPKG'
-{
-  \"name\": \"cgnat-portal\",
-  \"version\": \"1.0.0\",
-  \"private\": true,
-  \"scripts\": {
-    \"dev\": \"next dev\",
-    \"build\": \"next build\",
-    \"start\": \"next start\"
-  },
-  \"dependencies\": {
-    \"next\": \"14.0.0\",
-    \"react\": \"^18\",
-    \"react-dom\": \"^18\"
-  }
-}
-EOFPKG
+      {
+        \"name\": \"cgnat-portal\",
+        \"version\": \"1.0.0\",
+        \"private\": true,
+        \"scripts\": {
+          \"dev\": \"next dev\",
+          \"build\": \"next build\",
+          \"start\": \"next start\"
+        },
+        \"dependencies\": {
+          \"next\": \"14.0.0\",
+          \"react\": \"^18\",
+          \"react-dom\": \"^18\"
+        }
+      }
+      EOFPKG
         fi
         npm install
         npm run dev
       "
 
-  # MinIO para backup offsite
   minio:
     image: minio/minio:latest
     container_name: cgnat-minio
@@ -174,11 +162,6 @@ EOFPKG
     networks:
       - cgnat-network
     command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
 
 volumes:
   elasticsearch_data:
